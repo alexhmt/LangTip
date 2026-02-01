@@ -4,13 +4,7 @@
 //! for different layouts.
 
 use crate::config::SoundConfig;
-
-// Link to kernel32 for Beep function
-// Note: windows crate doesn't export Beep, so we use direct linking
-#[link(name = "kernel32")]
-extern "system" {
-    fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
-}
+use windows::Win32::System::Diagnostics::Debug::Beep;
 
 /// Plays a sound when the layout changes.
 ///
@@ -30,6 +24,6 @@ pub fn play_layout_sound(is_russian: bool, config: &SoundConfig) {
 
     // Windows Beep: frequency 37-32767 Hz
     unsafe {
-        Beep(freq, config.duration_ms);
+        let _ = Beep(freq, config.duration_ms);
     }
 }
