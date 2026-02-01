@@ -13,7 +13,7 @@ mod single_instance;
 mod sound;
 mod tray;
 
-use config::ConfigManager;
+use config::{AppConfig, ConfigManager};
 use hotkeys::HotkeyManager;
 use indicator::{get_enabled_positions, IndicatorWindow};
 use keyboard_hook::{get_current_layout, KeyboardLayoutHook, LayoutInfo};
@@ -34,6 +34,26 @@ use windows::Win32::{
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
 static VISIBLE: AtomicBool = AtomicBool::new(true);
 
+// Config check interval
+const CONFIG_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Creates indicator windows based on config.
+fn create_indicators(config: &AppConfig) -> Vec<IndicatorWindow> {
+    let monitors = get_monitors();
+    let positions = get_enabled_positions(config);
+    let mut indicators = Vec::new();
+
+    for monitor in &monitors {
+        for position in &positions {
+            if let Some(window) = IndicatorWindow::new(*position, config, monitor.clone()) {
+                indicators.push(window);
+            }
+        }
+    }
+
+    indicators
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -46,25 +66,16 @@ fn main() {
     }
 
     let config_manager = ConfigManager::new();
-    let config = config_manager.load();
-    log::info!("Configuration loaded");
+    let mut config = config_manager.load();
+    log::info!("Configuration loaded from {:?}", config_manager.path());
 
     // Create indicator windows
-    let monitors = get_monitors();
-    log::info!("Found {} monitors", monitors.len());
-
-    let positions = get_enabled_positions(&config);
-    let mut indicators: Vec<IndicatorWindow> = Vec::new();
-
-    for monitor in &monitors {
-        for position in &positions {
-            if let Some(window) = IndicatorWindow::new(*position, &config, monitor.clone()) {
-                indicators.push(window);
-            }
-        }
-    }
-
+    let mut indicators = create_indicators(&config);
     log::info!("Created {} indicator windows", indicators.len());
+
+    // Track config file modification time for hot reload
+    let mut last_config_mtime = config_manager.get_modified_time();
+    let mut last_config_check = Instant::now();
 
     // Channel for layout change events (from hook thread to main thread)
     let (layout_tx, layout_rx): (mpsc::Sender<LayoutInfo>, Receiver<LayoutInfo>) = mpsc::channel();
@@ -137,8 +148,8 @@ fn main() {
     log::info!("LangTip running");
 
     // Main message loop
-    let hide_delay = Duration::from_millis(config.hide_delay_ms as u64);
-    let config_sound = config.sound.clone();
+    let mut hide_delay = Duration::from_millis(config.hide_delay_ms as u64);
+    let mut config_sound = config.sound.clone();
     let mut msg = MSG::default();
     let mut was_visible = VISIBLE.load(Ordering::SeqCst);
 
@@ -228,6 +239,48 @@ fn main() {
         // Update fade animations
         for indicator in &indicators {
             indicator.update_fade();
+        }
+
+        // Check for config file changes (hot reload)
+        if last_config_check.elapsed() >= CONFIG_CHECK_INTERVAL {
+            last_config_check = Instant::now();
+
+            if let Some(current_mtime) = config_manager.get_modified_time() {
+                let config_changed = match last_config_mtime {
+                    Some(last) => current_mtime != last,
+                    None => true,
+                };
+
+                if config_changed {
+                    log::info!("Config file changed, reloading...");
+                    last_config_mtime = Some(current_mtime);
+
+                    // Reload config
+                    config = config_manager.load();
+
+                    // Update derived values
+                    hide_delay = Duration::from_millis(config.hide_delay_ms as u64);
+                    config_sound = config.sound.clone();
+
+                    // Recreate indicators with new config
+                    drop(indicators); // Destroy old windows
+                    indicators = create_indicators(&config);
+
+                    // Update with current layout and show
+                    let current_layout = get_current_layout();
+                    last_layout = current_layout.name.clone();
+                    for indicator in &indicators {
+                        indicator.update_text(&current_layout.name, current_layout.is_russian);
+                        if VISIBLE.load(Ordering::SeqCst) {
+                            indicator.show();
+                        }
+                    }
+                    indicators_shown = VISIBLE.load(Ordering::SeqCst);
+                    last_show_time = Instant::now();
+
+                    log::info!("Config reloaded, {} indicators recreated", indicators.len());
+                }
+            }
         }
 
         // Process Windows messages

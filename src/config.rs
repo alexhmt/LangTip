@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// Sound configuration for layout change notifications.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +283,18 @@ impl ConfigManager {
         let content = serde_json::to_string_pretty(config)?;
         fs::write(&self.config_path, content)?;
         Ok(())
+    }
+
+    /// Gets the modification time of the config file.
+    pub fn get_modified_time(&self) -> Option<SystemTime> {
+        fs::metadata(&self.config_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+    }
+
+    /// Returns the config file path.
+    pub fn path(&self) -> &PathBuf {
+        &self.config_path
     }
 }
 
