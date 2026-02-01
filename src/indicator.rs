@@ -11,7 +11,7 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+            BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HFONT,
             InvalidateRect, SelectObject, SetBkMode, SetTextColor, TextOutW, PAINTSTRUCT,
             TRANSPARENT,
         },
@@ -43,6 +43,24 @@ static CLASS_NAME_W: &[u16] = &[
 ];
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
+/// Thread-safe wrapper for HFONT.
+/// SAFETY: HFONT is only used from the main thread for GDI operations.
+#[derive(Clone, Copy)]
+struct FontHandle(isize);
+
+unsafe impl Send for FontHandle {}
+unsafe impl Sync for FontHandle {}
+
+impl FontHandle {
+    fn new(font: HFONT) -> Self {
+        Self(font.0 as isize)
+    }
+
+    fn as_hfont(&self) -> HFONT {
+        HFONT(self.0 as *mut std::ffi::c_void)
+    }
+}
+
 /// Global state for window procedure.
 struct WindowState {
     text: String,
@@ -50,6 +68,7 @@ struct WindowState {
     font_size: u32,
     color_en: (u8, u8, u8),
     color_ru: (u8, u8, u8),
+    font: FontHandle,
 }
 
 // Store window handles as raw pointers for thread safety
@@ -106,11 +125,12 @@ unsafe extern "system" fn window_proc(
                         s.font_size,
                         s.color_en,
                         s.color_ru,
+                        s.font,
                     )
                 })
             };
 
-            if let Some((text, is_russian, font_size, color_en, color_ru)) = state {
+            if let Some((text, is_russian, _font_size, color_en, color_ru, font_handle)) = state {
                 // Clear background with black (will be transparent due to LWA_COLORKEY)
                 let mut rect = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rect);
@@ -121,27 +141,8 @@ unsafe extern "system" fn window_proc(
                 // Set transparent background for text
                 let _ = SetBkMode(hdc, TRANSPARENT);
 
-                // Create font
-                let font_name: Vec<u16> =
-                    "Arial".encode_utf16().chain(std::iter::once(0)).collect();
-                let font = CreateFontW(
-                    font_size as i32,
-                    0,
-                    0,
-                    0,
-                    700, // FW_BOLD
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    PCWSTR(font_name.as_ptr()),
-                );
-
-                let old_font = SelectObject(hdc, font);
+                // Use cached font
+                let old_font = SelectObject(hdc, font_handle.as_hfont());
 
                 // Set text color
                 let (r, g, b) = if is_russian { color_ru } else { color_en };
@@ -154,18 +155,21 @@ unsafe extern "system" fn window_proc(
                 let text_wide: Vec<u16> = text.encode_utf16().collect();
                 let _ = TextOutW(hdc, 10, 5, &text_wide);
 
-                // Cleanup
+                // Restore old font (don't delete cached font)
                 SelectObject(hdc, old_font);
-                let _ = DeleteObject(font);
             }
 
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
         WM_DESTROY => {
-            // Remove from state
+            // Remove from state and cleanup font
             let hwnd_raw = hwnd.0 as isize;
             let mut states = WINDOW_STATES.lock();
+            // Delete cached font before removing state
+            if let Some((_, state)) = states.iter().find(|(h, _)| *h == hwnd_raw) {
+                let _ = DeleteObject(state.font.as_hfont());
+            }
             states.retain(|(h, _)| *h != hwnd_raw);
             LRESULT(0)
         }
@@ -289,6 +293,26 @@ impl IndicatorWindow {
             let color_en = parse_hex_color(&config.colors.en);
             let color_ru = parse_hex_color(&config.colors.ru);
 
+            // Create cached font
+            let font_name: Vec<u16> =
+                "Arial".encode_utf16().chain(std::iter::once(0)).collect();
+            let font = CreateFontW(
+                font_size as i32,
+                0,
+                0,
+                0,
+                700, // FW_BOLD
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                PCWSTR(font_name.as_ptr()),
+            );
+
             let hwnd_raw = hwnd.0 as isize;
             {
                 let mut states = WINDOW_STATES.lock();
@@ -300,6 +324,7 @@ impl IndicatorWindow {
                         font_size,
                         color_en,
                         color_ru,
+                        font: FontHandle::new(font),
                     },
                 ));
             }

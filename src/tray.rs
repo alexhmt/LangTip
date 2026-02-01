@@ -23,6 +23,7 @@ pub struct TrayIconManager {
     menu_show_id: Option<tray_icon::menu::MenuId>,
     menu_hide_id: Option<tray_icon::menu::MenuId>,
     menu_autostart_id: Option<tray_icon::menu::MenuId>,
+    menu_autostart_item: Option<CheckMenuItem>,
     menu_exit_id: Option<tray_icon::menu::MenuId>,
 }
 
@@ -38,6 +39,7 @@ impl TrayIconManager {
             menu_show_id: None,
             menu_hide_id: None,
             menu_autostart_id: None,
+            menu_autostart_item: None,
             menu_exit_id: None,
         }
     }
@@ -100,10 +102,11 @@ impl TrayIconManager {
         let menu_autostart = CheckMenuItem::new("Autostart", true, is_autostart_enabled(), None);
         let menu_exit = MenuItem::new("Exit", true, None);
 
-        // Store menu IDs
+        // Store menu IDs and items
         self.menu_show_id = Some(menu_show.id().clone());
         self.menu_hide_id = Some(menu_hide.id().clone());
         self.menu_autostart_id = Some(menu_autostart.id().clone());
+        self.menu_autostart_item = Some(menu_autostart.clone());
         self.menu_exit_id = Some(menu_exit.id().clone());
 
         // Create menu
@@ -142,11 +145,17 @@ impl TrayIconManager {
                     cb();
                 }
             } else if Some(&event.id) == self.menu_autostart_id.as_ref() {
-                // Toggle autostart
+                // Toggle autostart and update checkbox
                 if is_autostart_enabled() {
                     disable_autostart();
+                    if let Some(ref item) = self.menu_autostart_item {
+                        item.set_checked(false);
+                    }
                 } else {
                     enable_autostart();
+                    if let Some(ref item) = self.menu_autostart_item {
+                        item.set_checked(true);
+                    }
                 }
             } else if Some(&event.id) == self.menu_exit_id.as_ref() {
                 if let Some(ref cb) = self.on_exit {
