@@ -20,7 +20,8 @@ use windows::{
             IsWindow, RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
             ShowWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, LWA_ALPHA,
             LWA_COLORKEY, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_DESTROY, WM_PAINT,
-            WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+            WS_POPUP,
         },
     },
 };
@@ -184,6 +185,8 @@ pub struct IndicatorWindow {
     monitor: MonitorInfo,
     #[allow(dead_code)]
     font_size: u32,
+    /// Maximum alpha value derived from config opacity (0–255).
+    max_alpha: u8,
     alpha: AtomicU8,
     target_alpha: AtomicU8,
 }
@@ -215,12 +218,15 @@ impl IndicatorWindow {
         let margin = config.margin;
         let (x, y) = calculate_position(position, &monitor, width, height, margin);
 
+        // Convert opacity percent (0–100) to alpha byte (0–255)
+        let max_alpha = ((config.opacity.min(100) as f32 / 100.0) * 255.0) as u8;
+
         unsafe {
             let hinstance = GetModuleHandleW(None).unwrap_or_default();
 
-            // Removed WS_EX_TRANSPARENT to allow proper rendering
+            // WS_EX_TRANSPARENT makes window click-through (mouse events pass to windows below)
             let hwnd_result = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
                 PCWSTR(CLASS_NAME_W.as_ptr()),
                 PCWSTR::null(),
                 WS_POPUP,
@@ -305,6 +311,7 @@ impl IndicatorWindow {
                 position,
                 monitor,
                 font_size,
+                max_alpha,
                 alpha: AtomicU8::new(0),
                 target_alpha: AtomicU8::new(0),
             })
@@ -329,7 +336,7 @@ impl IndicatorWindow {
     /// Shows the window with fade-in animation.
     /// Call `update_fade()` repeatedly to animate.
     pub fn show(&self) {
-        self.target_alpha.store(255, Ordering::SeqCst);
+        self.target_alpha.store(self.max_alpha, Ordering::SeqCst);
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
             log::debug!("show() hwnd={:?}", hwnd.0);
@@ -388,12 +395,13 @@ impl IndicatorWindow {
     /// Sets the alpha value directly (bypasses animation).
     #[allow(dead_code)]
     pub fn set_alpha(&self, alpha: u8) {
-        self.alpha.store(alpha, Ordering::SeqCst);
-        self.target_alpha.store(alpha, Ordering::SeqCst);
+        let clamped = alpha.min(self.max_alpha);
+        self.alpha.store(clamped, Ordering::SeqCst);
+        self.target_alpha.store(clamped, Ordering::SeqCst);
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_COLORKEY | LWA_ALPHA);
-            if alpha > 0 {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), clamped, LWA_COLORKEY | LWA_ALPHA);
+            if clamped > 0 {
                 let _ = ShowWindow(hwnd, SW_SHOW);
             } else {
                 let _ = ShowWindow(hwnd, SW_HIDE);

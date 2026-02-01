@@ -147,6 +147,9 @@ pub struct AppConfig {
     /// Margin from screen edges.
     #[serde(default = "default_margin")]
     pub margin: i32,
+    /// Indicator opacity (0–100%).
+    #[serde(default = "default_opacity")]
+    pub opacity: u32,
     /// Colors configuration.
     #[serde(default)]
     pub colors: ColorsConfig,
@@ -173,6 +176,7 @@ impl Default for AppConfig {
             update_delay_ms: 250,
             hide_delay_ms: 5000,
             margin: 20,
+            opacity: 80,
             colors: ColorsConfig::default(),
             positions: PositionsConfig::default(),
             fade: FadeConfig::default(),
@@ -224,6 +228,9 @@ fn default_hide_delay() -> u32 {
 }
 fn default_margin() -> i32 {
     20
+}
+fn default_opacity() -> u32 {
+    80
 }
 fn default_fade_duration() -> u32 {
     200
