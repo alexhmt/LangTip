@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// Sound configuration for layout change notifications.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +147,9 @@ pub struct AppConfig {
     /// Margin from screen edges.
     #[serde(default = "default_margin")]
     pub margin: i32,
+    /// Indicator opacity (0–100%).
+    #[serde(default = "default_opacity")]
+    pub opacity: u32,
     /// Colors configuration.
     #[serde(default)]
     pub colors: ColorsConfig,
@@ -172,6 +176,7 @@ impl Default for AppConfig {
             update_delay_ms: 250,
             hide_delay_ms: 5000,
             margin: 20,
+            opacity: 80,
             colors: ColorsConfig::default(),
             positions: PositionsConfig::default(),
             fade: FadeConfig::default(),
@@ -223,6 +228,9 @@ fn default_hide_delay() -> u32 {
 }
 fn default_margin() -> i32 {
     20
+}
+fn default_opacity() -> u32 {
+    80
 }
 fn default_fade_duration() -> u32 {
     200
@@ -282,6 +290,18 @@ impl ConfigManager {
         let content = serde_json::to_string_pretty(config)?;
         fs::write(&self.config_path, content)?;
         Ok(())
+    }
+
+    /// Gets the modification time of the config file.
+    pub fn get_modified_time(&self) -> Option<SystemTime> {
+        fs::metadata(&self.config_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+    }
+
+    /// Returns the config file path.
+    pub fn path(&self) -> &PathBuf {
+        &self.config_path
     }
 }
 

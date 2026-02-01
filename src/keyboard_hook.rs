@@ -11,6 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 use windows::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    Globalization::GetLocaleInfoW,
     System::Threading::GetCurrentThreadId,
     UI::{
         Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
@@ -46,8 +47,34 @@ const VK_RMENU: u32 = 0xA5;
 const LANG_EN_US: u32 = 0x409;
 const LANG_RU: u32 = 0x419;
 
+// Locale info type for English language name
+const LOCALE_SENGLISHLANGUAGENAME: u32 = 0x1001;
+
 // Debounce interval in milliseconds
 const DEBOUNCE_MS: u64 = 100;
+
+/// Gets a 2-letter abbreviation for a language ID using GetLocaleInfoW.
+fn get_language_abbreviation(lang_id: u32) -> String {
+    unsafe {
+        let mut buf = [0u16; 64];
+        let len = GetLocaleInfoW(
+            lang_id,
+            LOCALE_SENGLISHLANGUAGENAME,
+            Some(&mut buf),
+        );
+
+        if len > 0 {
+            // Get full language name and take first 2 characters
+            let name = String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)]);
+            if name.len() >= 2 {
+                return name[..2].to_uppercase();
+            }
+        }
+
+        // Fallback to hex code
+        format!("{:X}", lang_id)
+    }
+}
 
 /// Layout information.
 #[derive(Debug, Clone, PartialEq)]
@@ -105,7 +132,7 @@ pub fn get_current_layout() -> LayoutInfo {
         let (name, is_russian) = match lang_id {
             LANG_EN_US => ("EN".to_string(), false),
             LANG_RU => ("RU".to_string(), true),
-            _ => (format!("{:X}", lang_id), false),
+            _ => (get_language_abbreviation(lang_id), false),
         };
 
         LayoutInfo { name, is_russian }

@@ -1,6 +1,6 @@
 [package]
 name = "langtip"
-version = "0.1.0"
+version = "0.0.2"
 edition = "2021"
 description = "Keyboard layout indicator for Windows"
 authors = ["LangTip"]
@@ -26,6 +26,7 @@ windows = { version = "0.58", features = [
     "Win32_System_SystemInformation",
     "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
+    "Win32_Globalization",
 ] }
 
 # System tray

@@ -4,7 +4,6 @@
 
 use crate::config::{parse_hex_color, AppConfig};
 use crate::monitors::MonitorInfo;
-use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use windows::{
     core::PCWSTR,
@@ -17,11 +16,12 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, IsWindow,
-            RegisterClassW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, CS_HREDRAW,
-            CS_VREDRAW, HWND_TOPMOST, LWA_ALPHA, LWA_COLORKEY, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-            SW_SHOW, WM_DESTROY, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-            WS_EX_TOPMOST, WS_POPUP,
+            CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
+            IsWindow, RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
+            ShowWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, LWA_ALPHA,
+            LWA_COLORKEY, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_DESTROY, WM_PAINT,
+            WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+            WS_POPUP,
         },
     },
 };
@@ -43,36 +43,16 @@ static CLASS_NAME_W: &[u16] = &[
 ];
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
 
-/// Thread-safe wrapper for HFONT.
-/// SAFETY: HFONT is only used from the main thread for GDI operations.
-#[derive(Clone, Copy)]
-struct FontHandle(isize);
-
-unsafe impl Send for FontHandle {}
-unsafe impl Sync for FontHandle {}
-
-impl FontHandle {
-    fn new(font: HFONT) -> Self {
-        Self(font.0 as isize)
-    }
-
-    fn as_hfont(&self) -> HFONT {
-        HFONT(self.0 as *mut std::ffi::c_void)
-    }
-}
-
-/// Global state for window procedure.
+/// Window state stored in GWLP_USERDATA.
 struct WindowState {
     text: String,
     is_russian: bool,
+    #[allow(dead_code)]
     font_size: u32,
     color_en: (u8, u8, u8),
     color_ru: (u8, u8, u8),
-    font: FontHandle,
+    font: HFONT,
 }
-
-// Store window handles as raw pointers for thread safety
-static WINDOW_STATES: Mutex<Vec<(isize, WindowState)>> = Mutex::new(Vec::new());
 
 /// Registers the window class.
 fn register_class() -> bool {
@@ -114,23 +94,11 @@ unsafe extern "system" fn window_proc(
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
 
-            // Get window state
-            let hwnd_raw = hwnd.0 as isize;
-            let state = {
-                let states = WINDOW_STATES.lock();
-                states.iter().find(|(h, _)| *h == hwnd_raw).map(|(_, s)| {
-                    (
-                        s.text.clone(),
-                        s.is_russian,
-                        s.font_size,
-                        s.color_en,
-                        s.color_ru,
-                        s.font,
-                    )
-                })
-            };
+            // Get window state from GWLP_USERDATA
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if ptr != 0 {
+                let state = &*(ptr as *const WindowState);
 
-            if let Some((text, is_russian, _font_size, color_en, color_ru, font_handle)) = state {
                 // Clear background with black (will be transparent due to LWA_COLORKEY)
                 let mut rect = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rect);
@@ -142,17 +110,21 @@ unsafe extern "system" fn window_proc(
                 let _ = SetBkMode(hdc, TRANSPARENT);
 
                 // Use cached font
-                let old_font = SelectObject(hdc, font_handle.as_hfont());
+                let old_font = SelectObject(hdc, state.font);
 
                 // Set text color
-                let (r, g, b) = if is_russian { color_ru } else { color_en };
+                let (r, g, b) = if state.is_russian {
+                    state.color_ru
+                } else {
+                    state.color_en
+                };
                 SetTextColor(
                     hdc,
                     COLORREF(r as u32 | ((g as u32) << 8) | ((b as u32) << 16)),
                 );
 
                 // Draw text
-                let text_wide: Vec<u16> = text.encode_utf16().collect();
+                let text_wide: Vec<u16> = state.text.encode_utf16().collect();
                 let _ = TextOutW(hdc, 10, 5, &text_wide);
 
                 // Restore old font (don't delete cached font)
@@ -163,14 +135,13 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
-            // Remove from state and cleanup font
-            let hwnd_raw = hwnd.0 as isize;
-            let mut states = WINDOW_STATES.lock();
-            // Delete cached font before removing state
-            if let Some((_, state)) = states.iter().find(|(h, _)| *h == hwnd_raw) {
-                let _ = DeleteObject(state.font.as_hfont());
+            // Cleanup: get state pointer, delete font, free memory
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+            if ptr != 0 {
+                let state = Box::from_raw(ptr as *mut WindowState);
+                let _ = DeleteObject(state.font);
+                // state is dropped here, freeing memory
             }
-            states.retain(|(h, _)| *h != hwnd_raw);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -196,6 +167,7 @@ impl HwndWrapper {
         HWND(self.0 as *mut std::ffi::c_void)
     }
 
+    #[allow(dead_code)]
     fn raw(&self) -> isize {
         self.0
     }
@@ -213,6 +185,8 @@ pub struct IndicatorWindow {
     monitor: MonitorInfo,
     #[allow(dead_code)]
     font_size: u32,
+    /// Maximum alpha value derived from config opacity (0–255).
+    max_alpha: u8,
     alpha: AtomicU8,
     target_alpha: AtomicU8,
 }
@@ -244,12 +218,15 @@ impl IndicatorWindow {
         let margin = config.margin;
         let (x, y) = calculate_position(position, &monitor, width, height, margin);
 
+        // Convert opacity percent (0–100) to alpha byte (0–255)
+        let max_alpha = ((config.opacity.min(100) as f32 / 100.0) * 255.0) as u8;
+
         unsafe {
             let hinstance = GetModuleHandleW(None).unwrap_or_default();
 
-            // Removed WS_EX_TRANSPARENT to allow proper rendering
+            // WS_EX_TRANSPARENT makes window click-through (mouse events pass to windows below)
             let hwnd_result = CreateWindowExW(
-                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
                 PCWSTR(CLASS_NAME_W.as_ptr()),
                 PCWSTR::null(),
                 WS_POPUP,
@@ -291,13 +268,16 @@ impl IndicatorWindow {
             // Make window topmost
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
 
-            // Add window state
+            // Create window state
             let color_en = parse_hex_color(&config.colors.en);
             let color_ru = parse_hex_color(&config.colors.ru);
 
             // Create cached font
-            let font_name: Vec<u16> =
-                "Arial".encode_utf16().chain(std::iter::once(0)).collect();
+            let font_name: Vec<u16> = config
+                .font_family
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
             let font = CreateFontW(
                 font_size as i32,
                 0,
@@ -315,27 +295,23 @@ impl IndicatorWindow {
                 PCWSTR(font_name.as_ptr()),
             );
 
-            let hwnd_raw = hwnd.0 as isize;
-            {
-                let mut states = WINDOW_STATES.lock();
-                states.push((
-                    hwnd_raw,
-                    WindowState {
-                        text: "EN".to_string(),
-                        is_russian: false,
-                        font_size,
-                        color_en,
-                        color_ru,
-                        font: FontHandle::new(font),
-                    },
-                ));
-            }
+            // Store state in GWLP_USERDATA
+            let state = Box::new(WindowState {
+                text: "EN".to_string(),
+                is_russian: false,
+                font_size,
+                color_en,
+                color_ru,
+                font,
+            });
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
             Some(Self {
                 hwnd: HwndWrapper::new(hwnd),
                 position,
                 monitor,
                 font_size,
+                max_alpha,
                 alpha: AtomicU8::new(0),
                 target_alpha: AtomicU8::new(0),
             })
@@ -344,16 +320,15 @@ impl IndicatorWindow {
 
     /// Updates the indicator text.
     pub fn update_text(&self, text: &str, is_russian: bool) {
-        {
-            let mut states = WINDOW_STATES.lock();
-            if let Some((_, state)) = states.iter_mut().find(|(h, _)| *h == self.hwnd.raw()) {
+        unsafe {
+            let ptr = GetWindowLongPtrW(self.hwnd.as_hwnd(), GWLP_USERDATA);
+            if ptr != 0 {
+                let state = &mut *(ptr as *mut WindowState);
                 state.text = text.to_string();
                 state.is_russian = is_russian;
             }
-        }
 
-        // Trigger repaint
-        unsafe {
+            // Trigger repaint
             let _ = InvalidateRect(self.hwnd.as_hwnd(), None, true);
         }
     }
@@ -361,7 +336,7 @@ impl IndicatorWindow {
     /// Shows the window with fade-in animation.
     /// Call `update_fade()` repeatedly to animate.
     pub fn show(&self) {
-        self.target_alpha.store(255, Ordering::SeqCst);
+        self.target_alpha.store(self.max_alpha, Ordering::SeqCst);
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
             log::debug!("show() hwnd={:?}", hwnd.0);
@@ -420,12 +395,13 @@ impl IndicatorWindow {
     /// Sets the alpha value directly (bypasses animation).
     #[allow(dead_code)]
     pub fn set_alpha(&self, alpha: u8) {
-        self.alpha.store(alpha, Ordering::SeqCst);
-        self.target_alpha.store(alpha, Ordering::SeqCst);
+        let clamped = alpha.min(self.max_alpha);
+        self.alpha.store(clamped, Ordering::SeqCst);
+        self.target_alpha.store(clamped, Ordering::SeqCst);
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_COLORKEY | LWA_ALPHA);
-            if alpha > 0 {
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), clamped, LWA_COLORKEY | LWA_ALPHA);
+            if clamped > 0 {
                 let _ = ShowWindow(hwnd, SW_SHOW);
             } else {
                 let _ = ShowWindow(hwnd, SW_HIDE);
@@ -470,6 +446,7 @@ impl Drop for IndicatorWindow {
 }
 
 /// Calculates the window position based on the position enum and monitor.
+/// Uses work area (rcWork) which excludes taskbar and app bars.
 fn calculate_position(
     position: Position,
     monitor: &MonitorInfo,
@@ -477,25 +454,23 @@ fn calculate_position(
     height: i32,
     margin: i32,
 ) -> (i32, i32) {
-    let taskbar_height = 40; // Approximate taskbar height
-
     match position {
-        Position::TopLeft => (monitor.x + margin, monitor.y + margin),
+        Position::TopLeft => (monitor.work_x + margin, monitor.work_y + margin),
         Position::TopRight => (
-            monitor.x + monitor.width - width - margin,
-            monitor.y + margin,
+            monitor.work_x + monitor.work_width - width - margin,
+            monitor.work_y + margin,
         ),
         Position::BottomLeft => (
-            monitor.x + margin,
-            monitor.y + monitor.height - height - margin - taskbar_height,
+            monitor.work_x + margin,
+            monitor.work_y + monitor.work_height - height - margin,
         ),
         Position::BottomRight => (
-            monitor.x + monitor.width - width - margin,
-            monitor.y + monitor.height - height - margin - taskbar_height,
+            monitor.work_x + monitor.work_width - width - margin,
+            monitor.work_y + monitor.work_height - height - margin,
         ),
         Position::Center => (
-            monitor.x + (monitor.width - width) / 2,
-            monitor.y + (monitor.height - height) / 2,
+            monitor.work_x + (monitor.work_width - width) / 2,
+            monitor.work_y + (monitor.work_height - height) / 2,
         ),
     }
 }

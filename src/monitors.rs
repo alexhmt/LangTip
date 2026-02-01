@@ -15,14 +15,22 @@ const MONITORINFOF_PRIMARY: u32 = 1;
 /// Information about a monitor.
 #[derive(Debug, Clone)]
 pub struct MonitorInfo {
-    /// X coordinate of the top-left corner.
+    /// X coordinate of the top-left corner (full monitor area).
     pub x: i32,
-    /// Y coordinate of the top-left corner.
+    /// Y coordinate of the top-left corner (full monitor area).
     pub y: i32,
-    /// Monitor width in pixels.
+    /// Monitor width in pixels (full monitor area).
     pub width: i32,
-    /// Monitor height in pixels.
+    /// Monitor height in pixels (full monitor area).
     pub height: i32,
+    /// X coordinate of the work area (excludes taskbar and app bars).
+    pub work_x: i32,
+    /// Y coordinate of the work area (excludes taskbar and app bars).
+    pub work_y: i32,
+    /// Work area width in pixels.
+    pub work_width: i32,
+    /// Work area height in pixels.
+    pub work_height: i32,
     /// Whether this is the primary monitor.
     pub is_primary: bool,
 }
@@ -60,11 +68,16 @@ pub fn get_monitors() -> Vec<MonitorInfo> {
 
         if GetMonitorInfoW(h_monitor, &mut mi).as_bool() {
             let rect = mi.rcMonitor;
+            let work = mi.rcWork;
             monitors.push(MonitorInfo {
                 x: rect.left,
                 y: rect.top,
                 width: rect.right - rect.left,
                 height: rect.bottom - rect.top,
+                work_x: work.left,
+                work_y: work.top,
+                work_width: work.right - work.left,
+                work_height: work.bottom - work.top,
                 is_primary: (mi.dwFlags & MONITORINFOF_PRIMARY) != 0,
             });
         }
