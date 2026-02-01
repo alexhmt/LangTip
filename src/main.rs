@@ -225,6 +225,11 @@ fn main() {
             last_hide_time = Instant::now(); // Start cooldown
         }
 
+        // Update fade animations
+        for indicator in &indicators {
+            indicator.update_fade();
+        }
+
         // Process Windows messages
         unsafe {
             if PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE).as_bool() {

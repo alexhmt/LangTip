@@ -201,6 +201,9 @@ impl HwndWrapper {
     }
 }
 
+/// Fade animation step size per update (higher = faster fade).
+const FADE_STEP: u8 = 25;
+
 /// A single indicator window.
 pub struct IndicatorWindow {
     hwnd: HwndWrapper,
@@ -211,7 +214,6 @@ pub struct IndicatorWindow {
     #[allow(dead_code)]
     font_size: u32,
     alpha: AtomicU8,
-    #[allow(dead_code)]
     target_alpha: AtomicU8,
 }
 
@@ -357,17 +359,15 @@ impl IndicatorWindow {
     }
 
     /// Shows the window with fade-in animation.
+    /// Call `update_fade()` repeatedly to animate.
     pub fn show(&self) {
         self.target_alpha.store(255, Ordering::SeqCst);
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
             log::debug!("show() hwnd={:?}", hwnd.0);
 
-            // Show window first
+            // Show window
             let _ = ShowWindow(hwnd, SW_SHOW);
-
-            // Set color key (black = transparent) + alpha to fully opaque
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_COLORKEY | LWA_ALPHA);
 
             // Bring to top
             let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
@@ -375,25 +375,53 @@ impl IndicatorWindow {
             // Force repaint
             let _ = InvalidateRect(hwnd, None, true);
         }
-        self.alpha.store(255, Ordering::SeqCst);
     }
 
     /// Hides the window with fade-out animation.
+    /// Call `update_fade()` repeatedly to animate. Window hides when alpha reaches 0.
     pub fn hide(&self) {
         self.target_alpha.store(0, Ordering::SeqCst);
-        unsafe {
-            let hwnd = self.hwnd.as_hwnd();
-            log::debug!("hide() hwnd={:?}", hwnd.0);
-            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_COLORKEY | LWA_ALPHA);
-            let _ = ShowWindow(hwnd, SW_HIDE);
-        }
-        self.alpha.store(0, Ordering::SeqCst);
+        log::debug!("hide() hwnd={:?}", self.hwnd.as_hwnd().0);
     }
 
-    /// Sets the alpha value directly.
+    /// Updates the fade animation. Returns true if animation is still in progress.
+    /// Should be called from the main loop (~60fps).
+    pub fn update_fade(&self) -> bool {
+        let current = self.alpha.load(Ordering::SeqCst);
+        let target = self.target_alpha.load(Ordering::SeqCst);
+
+        if current == target {
+            return false; // Animation complete
+        }
+
+        let new_alpha = if current < target {
+            // Fade in
+            current.saturating_add(FADE_STEP).min(target)
+        } else {
+            // Fade out
+            current.saturating_sub(FADE_STEP).max(target)
+        };
+
+        self.alpha.store(new_alpha, Ordering::SeqCst);
+
+        unsafe {
+            let hwnd = self.hwnd.as_hwnd();
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), new_alpha, LWA_COLORKEY | LWA_ALPHA);
+
+            // Hide window completely when fully transparent
+            if new_alpha == 0 {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
+
+        true // Animation in progress
+    }
+
+    /// Sets the alpha value directly (bypasses animation).
     #[allow(dead_code)]
     pub fn set_alpha(&self, alpha: u8) {
         self.alpha.store(alpha, Ordering::SeqCst);
+        self.target_alpha.store(alpha, Ordering::SeqCst);
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_COLORKEY | LWA_ALPHA);
@@ -415,6 +443,12 @@ impl IndicatorWindow {
     #[allow(dead_code)]
     pub fn get_target_alpha(&self) -> u8 {
         self.target_alpha.load(Ordering::SeqCst)
+    }
+
+    /// Returns true if fade animation is in progress.
+    #[allow(dead_code)]
+    pub fn is_animating(&self) -> bool {
+        self.alpha.load(Ordering::SeqCst) != self.target_alpha.load(Ordering::SeqCst)
     }
 
     /// Returns whether the window is valid.

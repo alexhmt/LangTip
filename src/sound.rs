@@ -6,6 +6,7 @@
 use crate::config::SoundConfig;
 
 // Link to kernel32 for Beep function
+// Note: windows crate doesn't export Beep, so we use direct linking
 #[link(name = "kernel32")]
 extern "system" {
     fn Beep(dwFreq: u32, dwDuration: u32) -> i32;
