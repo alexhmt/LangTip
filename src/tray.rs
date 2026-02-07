@@ -9,6 +9,8 @@ use tray_icon::{
     menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
 };
+use windows::core::w;
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
 
 /// Callback type for tray actions.
 pub type TrayCallback = Arc<dyn Fn() + Send + Sync>;
@@ -24,6 +26,7 @@ pub struct TrayIconManager {
     menu_hide_id: Option<tray_icon::menu::MenuId>,
     menu_autostart_id: Option<tray_icon::menu::MenuId>,
     menu_autostart_item: Option<CheckMenuItem>,
+    menu_about_id: Option<tray_icon::menu::MenuId>,
     menu_exit_id: Option<tray_icon::menu::MenuId>,
 }
 
@@ -40,6 +43,7 @@ impl TrayIconManager {
             menu_hide_id: None,
             menu_autostart_id: None,
             menu_autostart_item: None,
+            menu_about_id: None,
             menu_exit_id: None,
         }
     }
@@ -100,6 +104,7 @@ impl TrayIconManager {
         let menu_show = MenuItem::new("Show indicators", true, None);
         let menu_hide = MenuItem::new("Hide indicators", true, None);
         let menu_autostart = CheckMenuItem::new("Autostart", true, is_autostart_enabled(), None);
+        let menu_about = MenuItem::new("About", true, None);
         let menu_exit = MenuItem::new("Exit", true, None);
 
         // Store menu IDs and items
@@ -107,6 +112,7 @@ impl TrayIconManager {
         self.menu_hide_id = Some(menu_hide.id().clone());
         self.menu_autostart_id = Some(menu_autostart.id().clone());
         self.menu_autostart_item = Some(menu_autostart.clone());
+        self.menu_about_id = Some(menu_about.id().clone());
         self.menu_exit_id = Some(menu_exit.id().clone());
 
         // Create menu
@@ -116,6 +122,7 @@ impl TrayIconManager {
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&menu_autostart)?;
         menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&menu_about)?;
         menu.append(&menu_exit)?;
 
         // Create tray icon
@@ -157,6 +164,8 @@ impl TrayIconManager {
                         item.set_checked(true);
                     }
                 }
+            } else if Some(&event.id) == self.menu_about_id.as_ref() {
+                show_about_dialog();
             } else if Some(&event.id) == self.menu_exit_id.as_ref() {
                 if let Some(ref cb) = self.on_exit {
                     cb();
@@ -180,6 +189,20 @@ impl TrayIconManager {
     /// Stops the tray icon.
     pub fn stop(&mut self) {
         self.tray_icon = None;
+    }
+}
+
+/// Shows the About dialog with application information.
+fn show_about_dialog() {
+    let version = env!("CARGO_PKG_VERSION");
+    let text = format!(
+        "LangTip v{version}\n\nKeyboard layout indicator for Windows\n\nhttps://github.com/alexhmt/LangTip"
+    );
+    let text_wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let text_pcwstr = windows::core::PCWSTR(text_wide.as_ptr());
+
+    unsafe {
+        let _ = MessageBoxW(None, text_pcwstr, w!("About LangTip"), MB_OK | MB_ICONINFORMATION);
     }
 }
 
