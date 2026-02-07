@@ -120,6 +120,9 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 // Last event timestamp in ms since start (for debounce)
 static LAST_EVENT_MS: AtomicU64 = AtomicU64::new(0);
+/// Flag signaling that a layout check is pending (set by hook callback,
+/// consumed by debounce worker thread).
+static LAYOUT_CHECK_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// Gets the current keyboard layout.
 pub fn get_current_layout() -> LayoutInfo {
@@ -219,7 +222,7 @@ unsafe extern "system" fn keyboard_hook_proc(
     w_param: WPARAM,
     l_param: LPARAM,
 ) -> LRESULT {
-    if n_code >= 0 {
+    if n_code >= 0 && l_param.0 != 0 {
         let kb = &*(l_param.0 as *const KBDLLHOOKSTRUCT);
         let vk_code = kb.vkCode;
 
@@ -227,11 +230,8 @@ unsafe extern "system" fn keyboard_hook_proc(
         if is_modifier_key(vk_code)
             && (w_param.0 == WM_KEYUP as usize || w_param.0 == WM_SYSKEYUP as usize)
         {
-            // Schedule a delayed layout check in separate thread
-            thread::spawn(|| {
-                thread::sleep(std::time::Duration::from_millis(50));
-                check_layout_change_debounced();
-            });
+            // Signal pending layout check (handled by debounce worker thread)
+            LAYOUT_CHECK_PENDING.store(true, Ordering::Release);
         }
     }
 
@@ -374,6 +374,20 @@ fn message_loop() {
         // Check initial layout (no debounce for initial)
         check_layout_change();
 
+        // Spawn single debounce worker thread (replaces per-event thread::spawn)
+        let debounce_thread = thread::spawn(|| {
+            while RUNNING.load(Ordering::SeqCst) {
+                if LAYOUT_CHECK_PENDING.swap(false, Ordering::AcqRel) {
+                    thread::sleep(std::time::Duration::from_millis(50));
+                    if RUNNING.load(Ordering::SeqCst) {
+                        check_layout_change_debounced();
+                    }
+                } else {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        });
+
         // Message loop
         let mut msg = MSG::default();
         while RUNNING.load(Ordering::SeqCst) {
@@ -384,6 +398,9 @@ fn message_loop() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+
+        // Wait for debounce worker to finish
+        let _ = debounce_thread.join();
 
         // Cleanup hooks
         {
@@ -397,6 +414,12 @@ fn message_loop() {
 
         if !hook_foreground.is_invalid() {
             let _ = UnhookWinEvent(hook_foreground);
+        }
+
+        // Clear state inside thread to avoid lock contention with stop()
+        {
+            let mut state = HOOK_STATE.lock();
+            *state = None;
         }
     }
 }

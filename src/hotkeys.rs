@@ -279,14 +279,15 @@ fn hotkey_message_loop(toggle_hotkey: String, exit_hotkey: String) {
             DispatchMessageW(&msg);
         }
 
-        // Unregister hotkeys
+        // Unregister hotkeys and clear state inside thread
         {
-            let state = HOTKEY_STATE.lock();
+            let mut state = HOTKEY_STATE.lock();
             if let Some(ref s) = *state {
                 for hotkey_id in &s.registered_hotkeys {
                     let _ = UnregisterHotKey(HWND::default(), *hotkey_id);
                 }
             }
+            *state = None;
         }
     }
 }

@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "langtip"
-version = "0.0.2"
+version = "0.0.4"
 dependencies = [
  "dirs 5.0.1",
  "env_logger",

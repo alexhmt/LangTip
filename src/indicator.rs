@@ -4,6 +4,7 @@
 
 use crate::config::{parse_hex_color, AppConfig};
 use crate::monitors::MonitorInfo;
+use crate::SHOULD_RECREATE_INDICATORS;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use windows::{
     core::PCWSTR,
@@ -19,9 +20,9 @@ use windows::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
             IsWindow, RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
             ShowWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HWND_TOPMOST, LWA_ALPHA,
-            LWA_COLORKEY, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_DESTROY, WM_PAINT,
-            WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-            WS_POPUP,
+            LWA_COLORKEY, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_DESTROY,
+            WM_DISPLAYCHANGE, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
         },
     },
 };
@@ -134,13 +135,19 @@ unsafe extern "system" fn window_proc(
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
+        WM_DISPLAYCHANGE => {
+            log::info!("WM_DISPLAYCHANGE received, scheduling indicator recreation");
+            SHOULD_RECREATE_INDICATORS.store(true, Ordering::SeqCst);
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_DESTROY => {
-            // Cleanup: get state pointer, delete font, free memory
+            // Cleanup: clear pointer first to prevent use-after-free,
+            // then delete font and free memory
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
             if ptr != 0 {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 let state = Box::from_raw(ptr as *mut WindowState);
                 let _ = DeleteObject(state.font);
-                // state is dropped here, freeing memory
             }
             LRESULT(0)
         }
@@ -321,15 +328,17 @@ impl IndicatorWindow {
     /// Updates the indicator text.
     pub fn update_text(&self, text: &str, is_russian: bool) {
         unsafe {
-            let ptr = GetWindowLongPtrW(self.hwnd.as_hwnd(), GWLP_USERDATA);
+            let hwnd = self.hwnd.as_hwnd();
+            if !IsWindow(hwnd).as_bool() {
+                return;
+            }
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
             if ptr != 0 {
                 let state = &mut *(ptr as *mut WindowState);
                 state.text = text.to_string();
                 state.is_russian = is_russian;
             }
-
-            // Trigger repaint
-            let _ = InvalidateRect(self.hwnd.as_hwnd(), None, true);
+            let _ = InvalidateRect(hwnd, None, true);
         }
     }
 
@@ -339,6 +348,9 @@ impl IndicatorWindow {
         self.target_alpha.store(self.max_alpha, Ordering::SeqCst);
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
+            if !IsWindow(hwnd).as_bool() {
+                return;
+            }
             log::debug!("show() hwnd={:?}", hwnd.0);
 
             // Show window
@@ -381,6 +393,9 @@ impl IndicatorWindow {
 
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
+            if !IsWindow(hwnd).as_bool() {
+                return false;
+            }
             let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), new_alpha, LWA_COLORKEY | LWA_ALPHA);
 
             // Hide window completely when fully transparent
@@ -439,6 +454,14 @@ impl Drop for IndicatorWindow {
         unsafe {
             let hwnd = self.hwnd.as_hwnd();
             if IsWindow(hwnd).as_bool() {
+                // Clear state pointer and free memory BEFORE DestroyWindow
+                // to prevent use-after-free in window_proc
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+                if ptr != 0 {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                    let state = Box::from_raw(ptr as *mut WindowState);
+                    let _ = DeleteObject(state.font);
+                }
                 let _ = DestroyWindow(hwnd);
             }
         }

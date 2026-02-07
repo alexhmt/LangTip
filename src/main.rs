@@ -33,6 +33,7 @@ use windows::Win32::{
 // Global flags
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
 static VISIBLE: AtomicBool = AtomicBool::new(true);
+pub static SHOULD_RECREATE_INDICATORS: AtomicBool = AtomicBool::new(false);
 
 // Config check interval
 const CONFIG_CHECK_INTERVAL: Duration = Duration::from_secs(2);
@@ -281,6 +282,29 @@ fn main() {
                     log::info!("Config reloaded, {} indicators recreated", indicators.len());
                 }
             }
+        }
+
+        // Check if monitors changed (WM_DISPLAYCHANGE received)
+        if SHOULD_RECREATE_INDICATORS.swap(false, Ordering::SeqCst) {
+            log::info!("Display configuration changed, recreating indicators...");
+
+            // Recreate indicators with current config
+            drop(indicators);
+            indicators = create_indicators(&config);
+
+            // Update with current layout and show
+            let current_layout = get_current_layout();
+            last_layout = current_layout.name.clone();
+            for indicator in &indicators {
+                indicator.update_text(&current_layout.name, current_layout.is_russian);
+                if VISIBLE.load(Ordering::SeqCst) {
+                    indicator.show();
+                }
+            }
+            indicators_shown = VISIBLE.load(Ordering::SeqCst);
+            last_show_time = Instant::now();
+
+            log::info!("Indicators recreated after display change, {} windows", indicators.len());
         }
 
         // Process Windows messages
