@@ -35,7 +35,7 @@
 ### Сборка из исходников
 
 ```bash
-git clone https://github.com/user/langtip.git
+git clone https://github.com/alexhmt/LangTip.git
 cd langtip
 cargo build --release
 ```
@@ -52,6 +52,7 @@ cargo build --release
 - **Показать** — включить отображение индикатора
 - **Скрыть** — выключить отображение индикатора
 - **Автозапуск** — включить/выключить запуск при старте Windows
+- **About** — информация о программе (версия, ссылка на GitHub)
 - **Выход** — закрыть программу
 
 ### Горячие клавиши
